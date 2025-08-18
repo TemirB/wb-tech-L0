@@ -2,10 +2,9 @@ package kafka
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
-	"github.com/TemirB/WB-TECH-L0/internal/pkg/pool"
+	"go.uber.org/zap"
 
 	"github.com/segmentio/kafka-go"
 )
@@ -14,13 +13,13 @@ type Handler func(context.Context, []byte) error
 
 type Consumer struct {
 	reader  *kafka.Reader
-	parts   map[int]*pool.Pool
-	logger  *slog.Logger
+	parts   map[int]*Pool
 	workers int
 	handler Handler
+	logger  *zap.Logger
 }
 
-func NewConsumer(brokers []string, topic, group string, handler Handler, workers int, logger *slog.Logger) *Consumer {
+func NewConsumer(brokers []string, topic, group string, handler Handler, workers int, logger *zap.Logger) *Consumer {
 	reader := kafka.NewReader(
 		kafka.ReaderConfig{
 			Brokers:     brokers,
@@ -32,7 +31,7 @@ func NewConsumer(brokers []string, topic, group string, handler Handler, workers
 	)
 	return &Consumer{
 		reader:  reader,
-		parts:   map[int]*pool.Pool{},
+		parts:   make(map[int]*Pool),
 		logger:  logger,
 		workers: workers,
 		handler: handler,
@@ -44,7 +43,7 @@ func (c *Consumer) ensure(p int) {
 		if c.workers < 1 {
 			c.workers = 1
 		}
-		c.parts[p] = pool.New(c.workers)
+		c.parts[p] = NewPool(c.workers)
 	}
 }
 
@@ -56,22 +55,38 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		_ = c.reader.Close()
 	}()
+
 	for {
-		m, err := c.reader.ReadMessage(ctx)
-		if err != nil {
-			return err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			m, err := c.reader.ReadMessage(ctx)
+			if err != nil {
+				return err
+			}
+
+			c.ensure(m.Partition)
+			msg := m
+
+			c.parts[m.Partition].Submit(func() {
+				if err := c.handler(ctx, msg.Value); err != nil {
+					c.logger.Error("Kafka handler error",
+						zap.Int("partition", msg.Partition),
+						zap.Int64("offset", msg.Offset),
+						zap.Error(err),
+					)
+					return
+				}
+
+				if err := c.reader.CommitMessages(ctx, msg); err != nil {
+					c.logger.Error("Kafka commit error",
+						zap.Int("partition", msg.Partition),
+						zap.Int64("offset", msg.Offset),
+						zap.Error(err),
+					)
+				}
+			})
 		}
-		c.ensure(m.Partition)
-		pm := c.parts[m.Partition]
-		msg := m
-		pm.Submit(func() {
-			if err := c.handler(ctx, msg.Value); err != nil {
-				c.logger.Error("kafka_handler_error", "err", err, "partition", msg.Partition, "offset", msg.Offset)
-				return
-			}
-			if err := c.reader.CommitMessages(ctx, msg); err != nil {
-				c.logger.Error("kafka_commit_error", "err", err, "partition", msg.Partition, "offset", msg.Offset)
-			}
-		})
 	}
 }

@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"errors"
 	"time"
 )
+
+var ErrNotFound = errors.New("order not found")
 
 type Order struct {
 	OrderUID          string    `json:"order_uid"`

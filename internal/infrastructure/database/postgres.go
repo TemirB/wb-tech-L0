@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"github.com/TemirB/WB-TECH-L0/internal/domain"
+	"github.com/TemirB/wb-tech-L0/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -11,7 +11,7 @@ type OrderRepository struct {
 	pool *pgxpool.Pool
 }
 
-func MustConnect(ctx context.Context, dsn string) *pgxpool.Pool {
+func Connect(ctx context.Context, dsn string) *pgxpool.Pool {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		panic(err)
