@@ -4,11 +4,13 @@ import (
 	"context"
 
 	"github.com/TemirB/WB-TECH-L0/internal/domain"
+	"github.com/TemirB/WB-TECH-L0/internal/pkg/circuit"
 )
 
 type UpsertOrderHandler struct {
-	repo  domain.OrderRepository
-	cache domain.Cache
+	repo    domain.OrderRepository
+	cache   domain.Cache
+	breaker *circuit.Breaker
 }
 
 func NewUpsertOrderHandler(repo domain.OrderRepository, cache domain.Cache) *UpsertOrderHandler {
