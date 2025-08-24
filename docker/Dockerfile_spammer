@@ -1,0 +1,17 @@
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+# Копируем модули
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Собираем спаммер
+RUN go build -o spammer ./cmd/spammer/
+
+EXPOSE 8082
+
+CMD ["./spammer"]

@@ -18,10 +18,17 @@ func New(size int) (*LRU, error) {
 	return &LRU{c}, nil
 }
 
-func (l *LRU) Get(uid string) (domain.Order, bool) {
-	return l.c.Get(uid)
+func (l *LRU) Get(uid string) (*domain.Order, bool) {
+	order, ok := l.c.Get(uid)
+	return &order, ok
 }
 
-func (l *LRU) Set(uid string, o domain.Order) {
-	l.c.Add(uid, o)
+func (l *LRU) Set(order *domain.Order) {
+	l.c.Add(order.OrderUID, *order)
+}
+
+func (c *LRU) Warm(list []*domain.Order) {
+	for _, o := range list {
+		c.Set(o)
+	}
 }

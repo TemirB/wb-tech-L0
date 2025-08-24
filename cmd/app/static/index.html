@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8"/>
+    <title>Order lookup</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <style>
+      body{font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:2rem}
+      input, textarea{padding:.5rem;width:20rem;max-width:90%;margin-bottom:1rem;display:block}
+      button{padding:.55rem .9rem;margin-left:.5rem;cursor:pointer}
+      pre{background:#f6f8fa;padding:1rem;overflow:auto;border-radius:8px;margin-top:1rem}
+      .section{margin:2rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px}
+      .toggle{background:#f0f0f0;border:none;padding:.5rem 1rem;margin-bottom:1rem;cursor:pointer}
+      .success{color:green}
+      .error{color:red}
+    </style>
+  </head>
+  <body>
+    <h1>Управление заказами</h1>
+
+    <!-- Поиск заказа -->
+    <div class="section">
+      <h2>Поиск заказа (GET /order/{id})</h2>
+      <input id="searchId" placeholder="order_uid"/>
+      <button onclick="getOrder()">Искать</button>
+      <pre id="searchResult">Введите order_uid и нажмите "Искать"</pre>
+    </div>
+
+    <!-- Создание/обновление заказа -->
+    <div class="section">
+      <h2>Создать/обновить заказ (POST /order/)</h2>
+      <textarea id="orderJson" placeholder='Введите JSON заказа...' rows="15" cols="80">
+{
+  "order_uid": "b563feb7b2b84b6test",
+  "track_number": "WBILMTESTTRACK",
+  "entry": "WBIL",
+  "delivery": {
+    "name": "Test Testov",
+    "phone": "+9720000000",
+    "zip": "2639809",
+    "city": "Kiryat Mozkin",
+    "address": "Ploshad Mira 15",
+    "region": "Kraiot",
+    "email": "test@gmail.com"
+  },
+  "payment": {
+    "transaction": "b563feb7b2b84b6test",
+    "request_id": "",
+    "currency": "USD",
+    "provider": "wbpay",
+    "amount": 1817,
+    "payment_dt": 1637907727,
+    "bank": "alpha",
+    "delivery_cost": 1500,
+    "goods_total": 317,
+    "custom_fee": 0
+  },
+  "items": [
+    {
+      "chrt_id": 9934930,
+      "track_number": "WBILMTESTTRACK",
+      "price": 453,
+      "rid": "ab4219087a764ae0btest",
+      "name": "Mascaras",
+      "sale": 30,
+      "size": "0",
+      "total_price": 317,
+      "nm_id": 2389212,
+      "brand": "Vivienne Sabo",
+      "status": 202
+    }
+  ],
+  "locale": "en",
+  "internal_signature": "",
+  "customer_id": "test",
+  "delivery_service": "meest",
+  "shardkey": "9",
+  "sm_id": 99,
+  "date_created": "2021-11-26T06:22:19Z",
+  "oof_shard": "1"
+}</textarea>
+      <br>
+      <button onclick="upsertOrder()">📨 Отправить заказ</button>
+      <pre id="upsertResult"></pre>
+    </div>
+
+    <script>
+      // Функция поиска заказа (GET /order/{id})
+      async function getOrder(){
+        const id = document.getElementById('searchId').value.trim();
+        if(!id){ 
+          document.getElementById('searchResult').textContent = '❌ Введите order_uid';
+          return; 
+        }
+        
+        try {
+          const response = await fetch('/order/' + encodeURIComponent(id));
+          
+          // Сначала получаем текст ответа
+          const responseText = await response.text();
+              
+          // Пытаемся распарсить как JSON
+          try {
+            const result = JSON.parse(responseText);
+            
+            if (response.ok) {
+              document.getElementById('searchResult').className = 'success';
+              document.getElementById('searchResult').textContent = 
+                '✅ Найден заказ:\n' + JSON.stringify(result, null, 2);
+            } else {
+              document.getElementById('searchResult').className = 'error';
+              document.getElementById('searchResult').textContent = 
+                '❌ Ошибка: ' + JSON.stringify(result, null, 2);
+            }
+          } catch (e) {
+            // Если не JSON, показываем как текст
+            if (response.ok) {
+              document.getElementById('searchResult').className = 'success';
+              document.getElementById('searchResult').textContent = '✅ ' + responseText;
+            } else {
+              document.getElementById('searchResult').className = 'error';
+              document.getElementById('searchResult').textContent = '❌ ' + response.status + ' ' + response.statusText + '\n' + responseText;
+            }
+          }
+        } catch (error) {
+          document.getElementById('searchResult').className = 'error';
+          document.getElementById('searchResult').textContent = '❌ Ошибка запроса: ' + error.message;
+        }
+      }
+
+      // Функция создания/обновления заказа (POST /order/)
+      async function upsertOrder(){
+        const jsonInput = document.getElementById('orderJson').value.trim();
+        if(!jsonInput){ 
+          document.getElementById('upsertResult').textContent = '❌ Введите JSON заказа';
+          return; 
+        }
+        
+        try {
+          const orderData = JSON.parse(jsonInput);
+          
+          const response = await fetch('/order/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(orderData)
+          });
+
+          const responseText = await response.text();
+
+          try {
+            const result = await response.json();
+          
+            if (response.ok) {
+              document.getElementById('upsertResult').className = 'success';
+              document.getElementById('upsertResult').textContent = 
+                '✅ Успех: ' + JSON.stringify(result, null, 2);
+            } else {
+              document.getElementById('upsertResult').className = 'error';
+              document.getElementById('upsertResult').textContent = 
+                '❌ Ошибка: ' + JSON.stringify(result, null, 2);
+            }
+          } catch (e) {
+            if (response.ok) {
+              document.getElementById('upsertResult').className = 'success';
+              document.getElementById('upsertResult').textContent = '✅ ' + responseText;
+            } else {
+              document.getElementById('upsertResult').className = 'error';
+              document.getElementById('upsertResult').textContent = 
+              '❌ ' + response.status + ' ' + response.statusText + '\n' + responseText;
+            }
+          }
+        } catch (error) {
+          document.getElementById('upsertResult').className = 'error';
+          document.getElementById('upsertResult').textContent = 
+            '❌ Ошибка: ' + error.message;
+        }
+      }
+
+      // Автофокус на поле поиска при загрузке
+      document.getElementById('searchId').focus();
+    </script>
+  </body>
+</html>
