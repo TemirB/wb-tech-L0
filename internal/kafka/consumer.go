@@ -35,6 +35,7 @@ func (h *Handler) Start(ctx context.Context, retryPolicy config.Retry) {
 		zap.Strings("brokers", h.reader.Config().Brokers),
 		zap.String("topic", h.reader.Config().Topic),
 		zap.String("group", h.reader.Config().GroupID),
+		zap.Strings("group_topic", h.reader.Config().GroupTopics),
 	)
 
 	go func() {
