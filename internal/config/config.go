@@ -2,6 +2,8 @@ package config
 
 import (
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -58,137 +60,214 @@ type Config struct {
 	Retry   Retry
 }
 
-func get(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+// Load keeps the original API and fatals on error for simplicity in main().
+func Load() Config {
+	cfg, err := load()
+	if err != nil {
+		log.Fatalf("config load error: %v", err)
+	}
+	return cfg
+}
+
+func load() (Config, error) {
+	_ = godotenv.Load("env/.env")
+
+	cfg := Config{
+		HTTPAddr: envDefault("HTTP_ADDR", ":8081"),
+		CacheCap: envInt("CACHE_CAP", 1000),
+
+		Pg: Postgres{
+			Host:     strings.TrimSpace(os.Getenv("PG_HOST")),
+			Port:     strings.TrimSpace(envDefault("PG_PORT", "5432")),
+			DB:       strings.TrimSpace(os.Getenv("PG_DB")),
+			User:     strings.TrimSpace(os.Getenv("PG_USER")),
+			Password: strings.TrimSpace(os.Getenv("PG_PASSWORD")),
+			SSLMode:  strings.TrimSpace(envDefault("PG_SSLMODE", "disable")),
+		},
+
+		Tables: Tables{
+			Schema:   strings.TrimSpace(os.Getenv("DB_SCHEMA")),
+			Order:    strings.TrimSpace(os.Getenv("TBL_ORDER")),
+			Delivery: strings.TrimSpace(os.Getenv("TBL_DELIVERY")),
+			Payment:  strings.TrimSpace(os.Getenv("TBL_PAYMENT")),
+			Item:     strings.TrimSpace(os.Getenv("TBL_ITEM")),
+		},
+
+		Kafka: Kafka{
+			Brokers: splitCSV(strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))),
+			Topic:   strings.TrimSpace(os.Getenv("KAFKA_TOPIC")),
+			Group:   strings.TrimSpace(os.Getenv("KAFKA_GROUP")),
+			Workers: envInt("KAFKA_WORKERS", 10),
+		},
+
+		Breaker: Breaker{
+			Threshold:   envUint32("BREAKER_THRESHOLD", 5),
+			OpenTimeout: envDurationMS("BREAKER_OPENTIMEOUT", 10*time.Second),
+			MaxHalfOpen: envUint32("BREAKER_MAXHALFOPEN", 3),
+		},
+
+		Retry: Retry{
+			Attempts:     envInt("RETRY_ATTEMPTS", 5),
+			Base:         envDurationMS("RETRY_BASE", 100*time.Millisecond),
+			Max:          envDurationMS("RETRY_MAX", 5*time.Second),
+			JitterFactor: envFloat64("RETRY_JITTERFACTOR", 0.3),
+		},
+	}
+
+	// Validate required envs and basic sanity.
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func (c Config) validate() error {
+	var missing []string
+	req := map[string]string{
+		"PG_HOST":       c.Pg.Host,
+		"PG_DB":         c.Pg.DB,
+		"PG_USER":       c.Pg.User,
+		"PG_PASSWORD":   c.Pg.Password,
+		"DB_SCHEMA":     c.Tables.Schema,
+		"TBL_ORDER":     c.Tables.Order,
+		"TBL_DELIVERY":  c.Tables.Delivery,
+		"TBL_PAYMENT":   c.Tables.Payment,
+		"TBL_ITEM":      c.Tables.Item,
+		"KAFKA_BROKERS": strings.Join(c.Kafka.Brokers, ","),
+		"KAFKA_TOPIC":   c.Kafka.Topic,
+		"KAFKA_GROUP":   c.Kafka.Group,
+	}
+	for k, v := range req {
+		if strings.TrimSpace(v) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		return &missingEnvError{Keys: missing}
+	}
+
+	if c.CacheCap <= 0 {
+		log.Printf("CACHE_CAP is %d, adjusting to 1", c.CacheCap)
+	}
+	if c.Retry.Attempts < 0 {
+		log.Printf("RETRY_ATTEMPTS is %d, adjusting to 0", c.Retry.Attempts)
+	}
+	if c.Retry.Base <= 0 {
+		log.Printf("RETRY_BASE is %v, adjusting to 100ms", c.Retry.Base)
+	}
+	if c.Retry.Max < c.Retry.Base {
+		log.Printf("RETRY_MAX (%v) < RETRY_BASE (%v), adjusting max to base", c.Retry.Max, c.Retry.Base)
+	}
+	if len(c.Kafka.Brokers) == 0 {
+		return &missingEnvError{Keys: []string{"KAFKA_BROKERS"}}
+	}
+	return nil
+}
+
+type missingEnvError struct{ Keys []string }
+
+func (e *missingEnvError) Error() string {
+	return "missing required envs: " + strings.Join(e.Keys, ", ")
+}
+
+// DSN builds a proper Postgres URL, safely escaping user/pass and query.
+func (c Config) DSN() string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.Pg.User, c.Pg.Password),
+		Host:   net.JoinHostPort(c.Pg.Host, c.Pg.Port),
+		Path:   "/" + c.Pg.DB,
+	}
+	q := url.Values{}
+	if c.Pg.SSLMode != "" {
+		q.Set("sslmode", c.Pg.SSLMode)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func envDefault(k, def string) string {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return v
 	}
 	return def
 }
-func must(k string) string {
-	v := os.Getenv(k)
+
+func envInt(k string, def int) int {
+	v := strings.TrimSpace(os.Getenv(k))
 	if v == "" {
-		log.Fatalf("missing env %s", k)
+		return def
 	}
-	return v
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("invalid %s=%q, using default %d: %v", k, v, def, err)
+		return def
+	}
+	return n
 }
 
-func Load() Config {
-	_ = godotenv.Load("env/.env")
-
-	capacity := 1000
-	if s := os.Getenv("CACHE_CAP"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			capacity = n
-		}
+func envUint32(k string, def uint32) uint32 {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
 	}
-
-	workers := 10
-	if s := os.Getenv("KAFKA_WORKERS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			workers = n
-		}
+	u, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		log.Printf("invalid %s=%q, using default %d: %v", k, v, def, err)
+		return def
 	}
-
-	// Breaker
-	var threshold uint32 = 5
-	if s := os.Getenv("BREAKER_THRESHOLD"); s != "" {
-		if n, err := strconv.ParseUint(s, 10, 32); err == nil {
-			threshold = uint32(n)
-		}
-	}
-	openTimeout := 10000 // milliseconds
-	if s := os.Getenv("BREAKER_OPENTIMEOUT"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			openTimeout = n
-		}
-	}
-	var maxHalfOpen uint32 = 3
-	if s := os.Getenv("BREAKER_MAXHALFOPEN"); s != "" {
-		if n, err := strconv.ParseUint(s, 10, 32); err == nil {
-			maxHalfOpen = uint32(n)
-		}
-	}
-
-	// Retry
-	attempts := 5
-	if s := os.Getenv("RETRY_ATTEMPTS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			attempts = n
-		}
-	}
-	base := 100 // milliseconds
-	if s := os.Getenv("RETRY_BASE"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			base = n
-		}
-	}
-	max := 5000 // milliseconds
-	if s := os.Getenv("RETRY_MAX"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			max = n
-		}
-	}
-	jitterFactor := 0.3
-	if s := os.Getenv("RETRY_JITTERFACTOR"); s != "" {
-		if n, err := strconv.ParseFloat(s, 64); err == nil {
-			jitterFactor = n
-		}
-	}
-
-	cfg := Config{
-		HTTPAddr: get("HTTP_ADDR", ":8081"),
-		CacheCap: capacity,
-
-		Pg: Postgres{
-			Host:     strings.TrimSpace(must("PG_HOST")),
-			Port:     strings.TrimSpace(get("PG_PORT", "5432")),
-			DB:       strings.TrimSpace(must("PG_DB")),
-			User:     strings.TrimSpace(must("PG_USER")),
-			Password: strings.TrimSpace(must("PG_PASSWORD")),
-			SSLMode:  strings.TrimSpace(get("PG_SSLMODE", "disable")),
-		},
-
-		Tables: Tables{
-			Schema:   must("DB_SCHEMA"),
-			Order:    must("TBL_ORDER"),
-			Delivery: must("TBL_DELIVERY"),
-			Payment:  must("TBL_PAYMENT"),
-			Item:     must("TBL_ITEM"),
-		},
-
-		Kafka: Kafka{
-			Brokers: splitCSV(must("KAFKA_BROKERS")),
-			// Trim any leading/trailing whitespace from topic and group to avoid subtle mismatches.
-			Topic:   strings.TrimSpace(must("KAFKA_TOPIC")),
-			Group:   strings.TrimSpace(must("KAFKA_GROUP")),
-			Workers: workers,
-		},
-
-		Breaker: Breaker{
-			Threshold:   threshold,
-			OpenTimeout: time.Duration(openTimeout) * time.Millisecond,
-			MaxHalfOpen: maxHalfOpen,
-		},
-
-		Retry: Retry{
-			Attempts:     attempts,
-			Base:         time.Duration(base) * time.Millisecond,
-			Max:          time.Duration(max) * time.Millisecond,
-			JitterFactor: jitterFactor,
-		},
-	}
-
-	return cfg
+	return uint32(u)
 }
 
-func (c Config) DSN() string {
-	return "postgres://" + c.Pg.User + ":" + c.Pg.Password + "@" + c.Pg.Host + ":" + c.Pg.Port + "/" + c.Pg.DB + "?sslmode=" + c.Pg.SSLMode
+func envFloat64(k string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		log.Printf("invalid %s=%q, using default %.3f: %v", k, v, def, err)
+		return def
+	}
+	return f
+}
+
+// envDurationMS supports either plain integer milliseconds ("1500") or
+// Go duration strings ("1.5s", "250ms", "2m").
+func envDurationMS(k string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	// If it looks like a duration with units, try ParseDuration first.
+	if strings.IndexFunc(v, func(r rune) bool { return r < '0' || r > '9' }) != -1 {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Printf("invalid %s=%q, using default %v: %v", k, v, def, err)
+			return def
+		}
+		return d
+	}
+	// Otherwise treat as milliseconds.
+	ms, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("invalid %s=%q, using default %v: %v", k, v, def, err)
+		return def
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func splitCSV(s string) []string {
-	ps := strings.Split(s, ",")
-	for i := range ps {
-		ps[i] = strings.TrimSpace(ps[i])
+	if s == "" {
+		return nil
 	}
-	return ps
+	raw := strings.Split(s, ",")
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
