@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
+//go:generate mockgen -source internal/application/handler/handler.go -destination=internal/mocks/handler_mock_test.go -package=mocks
+
 var (
 	ErrBadJSON     = errors.New("bad json")
 	ErrUpsert      = errors.New("upsert failed")

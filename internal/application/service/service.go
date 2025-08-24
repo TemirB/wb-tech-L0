@@ -9,6 +9,8 @@ import (
 	"go.uber.org/zap"
 )
 
+//go:generate mockgen -source internal/application/service/service.go -destination=internal/mocks/service_mock_test.go -package=mocks
+
 type Cache interface {
 	Set(*domain.Order)
 	Get(string) (*domain.Order, bool)

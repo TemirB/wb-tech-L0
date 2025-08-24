@@ -9,6 +9,8 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
+//go:generate mockgen -source internal/cache/cache.go -destination=internal/mocks/cache_mock_test.go -package=mocks
+
 type repo interface {
 	GetByUID(ctx context.Context, uid string) (*domain.Order, error)
 	RecentOrderIDs(ctx context.Context, limit int) ([]string, error)

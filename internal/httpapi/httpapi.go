@@ -15,21 +15,21 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:generate mockgen -destination=../mocks/mock_service.go -package=mocks github.com/TemirB/wb-tech-L0/internal/httpapi Service
+//go:generate mockgen -source internal/httpapi/httpapi.go -destination=internal/mocks/httpapi_mock_test.go -package=mocks
 
-type Service interface {
+type ServerWithStats interface {
 	GetByUIDWithStats(ctx context.Context, uid string) (*domain.Order, service.LookupStats, error)
 	UpsertWithStats(ctx context.Context, order *domain.Order) (service.UpsertStats, error)
 }
 
 type Server struct {
-	service Service
+	service ServerWithStats
 	mux     *http.ServeMux
 	logger  *zap.Logger
 	metrics observability.Metrics
 }
 
-func New(service Service, logger *zap.Logger, metrics observability.Metrics) *Server {
+func New(service ServerWithStats, logger *zap.Logger, metrics observability.Metrics) *Server {
 	s := &Server{
 		service: service,
 		logger:  logger,

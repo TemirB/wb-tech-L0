@@ -20,5 +20,5 @@ type UpsertStats struct {
 }
 
 func convertToMs(t time.Time) float64 {
-	return float64(time.Since(t).Microseconds()) / 1000.0
+	return float64(time.Since(t).Milliseconds())
 }
