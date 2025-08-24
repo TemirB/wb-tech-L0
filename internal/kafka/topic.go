@@ -12,8 +12,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// EnsureTopic гарантирует существование топика: если его нет — создаёт и ждёт,
-// пока партиции станут видимы в метаданных. Идемпотентно и безопасно при конкурентных вызовах.
+// EnsureTopic guarantees the existence of a topic: if it does not exist, it creates it and waits
+// until the partitions become visible in the metadata. It is idempotent and safe for concurrent calls.
 func EnsureTopic(ctx context.Context, brokers []string, topic string, numPartitions, replicationFactor int, log *zap.Logger) error {
 	if len(brokers) == 0 {
 		return fmt.Errorf("no kafka brokers configured")
@@ -24,20 +24,19 @@ func EnsureTopic(ctx context.Context, brokers []string, topic string, numPartiti
 
 	dialer := &kafkago.Dialer{Timeout: 10 * time.Second}
 
-	// Подключаемся к любому брокеру
 	conn, err := dialer.DialContext(ctx, "tcp", brokers[0])
 	if err != nil {
 		return fmt.Errorf("dial broker: %w", err)
 	}
 	defer conn.Close()
 
-	// Если топик уже есть — выходим
+	// If the topic already exists, exit.
 	if parts, err := conn.ReadPartitions(topic); err == nil && len(parts) > 0 {
 		log.Info("kafka topic exists", zap.String("topic", topic), zap.Int("partitions", len(parts)))
 		return nil
 	}
 
-	// Находим контроллер и создаём топик там
+	// Find the controller and create a topic there
 	controller, err := conn.Controller()
 	if err != nil {
 		return fmt.Errorf("get controller: %w", err)
@@ -60,12 +59,11 @@ func EnsureTopic(ctx context.Context, brokers []string, topic string, numPartiti
 		NumPartitions:     numPartitions,
 		ReplicationFactor: replicationFactor,
 	})
-	// Если топик уже создан кем-то другим — это не ошибка
+
 	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "exists") {
 		return fmt.Errorf("create topic: %w", err)
 	}
 
-	// Ждём, пока партиции появятся (до 10с)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if ctx.Err() != nil {

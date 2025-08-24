@@ -48,7 +48,6 @@ func NewConsumer(handler MessageHandler, reader *kafkago.Reader, logger *zap.Log
 	}
 }
 
-// Start — запускает основной цикл потребления.
 func (c *Consumer) Start(ctx context.Context) {
 	rc := c.reader.Config()
 	c.zlogger.Info("Starting Kafka consumer",
