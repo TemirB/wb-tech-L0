@@ -14,65 +14,57 @@ import (
 	"go.uber.org/zap"
 )
 
-// MessageHandler — минимальный интерфейс, который мы ожидаем от твоего обработчика.
 type MessageHandler interface {
 	Handle(ctx context.Context, msg kafkago.Message) error
 }
 
-// Consumer инкапсулирует чтение из kafka-go Reader + worker pool обработки.
 type Consumer struct {
 	handler MessageHandler
 	reader  *kafkago.Reader
 	zlogger *zap.Logger
 
-	workers int          // размер пула воркеров
-	jobs    chan jobItem // очередь задач для воркеров
+	workerPoolSize int
+	jobs           chan jobItem
 }
 
 type jobItem struct {
 	msg    kafkago.Message
-	result chan error // канал-фиксация завершения конкретного сообщения
+	result chan error
 }
 
-// New — конструктор консьюмера.
-func New(handler MessageHandler, reader *kafkago.Reader, logger *zap.Logger) *Consumer {
-	// workers по умолчанию: из env KAFKA_WORKERS или 4
-	workers := 4
+func NewConsumer(handler MessageHandler, reader *kafkago.Reader, logger *zap.Logger) *Consumer {
+	workerPoolSize := 4
 	if s := os.Getenv("KAFKA_WORKERS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			workers = n
+			workerPoolSize = n
 		}
 	}
 	return &Consumer{
-		handler: handler,
-		reader:  reader,
-		zlogger: logger,
-		workers: workers,
-		// буфер небольшой, чтобы не раздувать память; воркеры успеют разгребать
-		jobs: make(chan jobItem, workers*2),
+		handler:        handler,
+		reader:         reader,
+		zlogger:        logger,
+		workerPoolSize: workerPoolSize,
+		jobs:           make(chan jobItem, workerPoolSize*2),
 	}
 }
 
 // Start — запускает основной цикл потребления.
-// Параметр retryCfg специально типом any: бизнес-ретраи уже внутри handler/circuit-breaker.
-// Если понадобятся ретраи на уровне консьюмера — см. пометки // RETRY-HOOK ниже.
-func (c *Consumer) Start(ctx context.Context, retryCfg any) {
+func (c *Consumer) Start(ctx context.Context) {
 	rc := c.reader.Config()
 	c.zlogger.Info("Starting Kafka consumer",
 		zap.Strings("brokers", rc.Brokers),
 		zap.String("group", rc.GroupID),
-		zap.String("topic", rc.Topic),              // в group-режиме будет пустым — это норм
-		zap.Strings("group_topic", rc.GroupTopics), // здесь должен быть твой топик
+		zap.String("topic", rc.Topic),
+		zap.Strings("group_topic", rc.GroupTopics),
 	)
 
-	// Стартуем пул воркеров
-	for i := 0; i < c.workers; i++ {
+	for i := 0; i < c.workerPoolSize; i++ {
 		go c.worker(ctx, i)
 	}
 
-	// Основной fetch-цикл. Очень важно: мы отправляем задачу воркерам и
-	// ЖДЁМ результат по per-message каналу. Это гарантирует, что коммит
-	// оффсета идёт в порядке получения сообщений, т.е. без «перепрыгивания».
+	// Main fetch cycle. Very important: we send the task to the workers and
+	// WAIT for the result on the per-message channel. This ensures that the commit
+	// offset goes in the order of receiving messages, i.e. without “jumping”.
 	for {
 		select {
 		case <-ctx.Done():
@@ -84,7 +76,7 @@ func (c *Consumer) Start(ctx context.Context, retryCfg any) {
 		msg, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				// выходим по контексту
+				// exit by context
 				return
 			}
 			if isBenignFetchTimeout(err) {
@@ -93,13 +85,13 @@ func (c *Consumer) Start(ctx context.Context, retryCfg any) {
 				continue
 			}
 
-			// Частые временные ошибки при ребалансах/координаторе — просто подождём и продолжим
+			// Frequent temporary errors during rebalancing/coordinator = just wait and continue
 			c.zlogger.Warn("FetchMessage error, backing off", zap.Error(err))
 			sleepWithContext(ctx, 500*time.Millisecond)
 			continue
 		}
 
-		// Отдаём сообщение воркерам и ждём конкретно его завершения.
+		// We send the message to the workers and wait for it to be completed.
 		done := make(chan error, 1)
 		select {
 		case c.jobs <- jobItem{msg: msg, result: done}:
@@ -115,22 +107,21 @@ func (c *Consumer) Start(ctx context.Context, retryCfg any) {
 		}
 
 		if procErr != nil {
-			// Здесь ты можешь принять решение о локальном ретрае на уровне консьюмера.
-			// Сейчас — ЛОГИРУЕМ и НЕ коммитим, чтобы сообщение читалось снова этой же группой.
-			// RETRY-HOOK: если хочешь «жёстких» ретраев здесь — добавь цикл с backoff и т.п.
 			c.zlogger.Error("handler failed; message will not be committed", zap.Error(procErr),
 				zap.String("topic", msg.Topic), zap.Int("partition", msg.Partition), zap.Int64("offset", msg.Offset))
-			// Небольшая задержка, чтобы не крутить проблему слишком агрессивно:
+			// A slight delay so as not to twist the problem too aggressively:
 			sleepWithContext(ctx, 200*time.Millisecond)
 			continue
 		}
 
-		// Обработано успешно — коммитим ЭТО сообщение (в порядке приёма).
 		if err := c.reader.CommitMessages(ctx, msg); err != nil {
-			// Если коммит не удался — мы залогируем и сделаем бэкофф.
-			// На практике kafka-go сам переотправит при следующих попытках.
-			c.zlogger.Warn("commit failed", zap.Error(err),
-				zap.String("topic", msg.Topic), zap.Int("partition", msg.Partition), zap.Int64("offset", msg.Offset))
+			c.zlogger.Warn(
+				"commit failed",
+				zap.Error(err),
+				zap.String("topic", msg.Topic),
+				zap.Int("partition", msg.Partition),
+				zap.Int64("offset", msg.Offset),
+			)
 			sleepWithContext(ctx, 200*time.Millisecond)
 			continue
 		}
@@ -139,8 +130,8 @@ func (c *Consumer) Start(ctx context.Context, retryCfg any) {
 	}
 }
 
-// worker — воркер обработки сообщений.
-// Он получает конкретный msg и обязан обязательно отправить результат в result-канал.
+// worker — message processing worker.
+// It receives a specific msg and must send the result to the result channel.
 func (c *Consumer) worker(ctx context.Context, id int) {
 	logPrefix := fmt.Sprintf("worker-%d", id)
 	stdlog := log.New(os.Stdout, logPrefix+" ", log.LstdFlags)
@@ -150,7 +141,7 @@ func (c *Consumer) worker(ctx context.Context, id int) {
 		case <-ctx.Done():
 			return
 		case it := <-c.jobs:
-			// Защита от случайного закрытия канала
+			// Protection against accidental channel closure
 			if it.result == nil {
 				continue
 			}
@@ -158,8 +149,6 @@ func (c *Consumer) worker(ctx context.Context, id int) {
 			msg := it.msg
 			start := time.Now()
 
-			// Вызов бизнес-обработчика.
-			// Если он оборачивает ретраи/брейкер — отлично. Тогда мы просто проксируем ошибку наружу.
 			err := c.handler.Handle(ctx, msg)
 
 			elapsed := time.Since(start)
@@ -175,7 +164,7 @@ func (c *Consumer) worker(ctx context.Context, id int) {
 				continue
 			}
 
-			// Удобный debug-трейс + короткий stdout для быстрого «грезинга» при нагрузке.
+			// Convenient debug trace + short stdout for quick "grazing" under load.
 			c.zlogger.Debug("message handled",
 				zap.String("topic", msg.Topic),
 				zap.Int("partition", msg.Partition),
@@ -191,7 +180,6 @@ func (c *Consumer) worker(ctx context.Context, id int) {
 	}
 }
 
-// sleepWithContext — безопасный sleep, прерываемый контекстом.
 func sleepWithContext(ctx context.Context, d time.Duration) {
 	t := time.NewTimer(d)
 	defer t.Stop()

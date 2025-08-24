@@ -17,6 +17,7 @@ import (
 	"github.com/TemirB/wb-tech-L0/internal/database"
 	"github.com/TemirB/wb-tech-L0/internal/httpapi"
 	"github.com/TemirB/wb-tech-L0/internal/kafka"
+	"github.com/TemirB/wb-tech-L0/internal/observability"
 	"github.com/TemirB/wb-tech-L0/internal/pkg/breaker"
 	kafkago "github.com/segmentio/kafka-go"
 )
@@ -38,15 +39,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	// Warm
-	if ids, err := repo.RecentOrderIDs(ctx, cfg.CacheCap); err == nil {
-		for _, id := range ids {
-			if o, err := repo.GetByUID(ctx, id); err == nil {
-				cache.Set(o)
-			}
-		}
-	}
+	cache.Warm(ctx, cfg, repo)
 
 	if err := kafka.EnsureTopic(ctx, cfg.Kafka.Brokers, cfg.Kafka.Topic, 1, 1, logger); err != nil {
 		logger.Fatal("failed to ensure kafka topic", zap.Error(err))
@@ -71,14 +64,15 @@ func main() {
 		// ErrorLogger: log.New(os.Stderr, "kafka ERR ", log.LstdFlags),
 	})
 
+	metrics := observability.NewInmem(100)
 	breaker := breaker.New(cfg.Breaker)
-	service := service.NewService(cache, repo, logger)
+	service := service.NewService(cache, repo, logger, metrics)
 	handler := handler.NewHandler(service, breaker, cfg.Retry, logger)
 
-	consumer := kafka.New(handler, reader, logger)
-	go consumer.Start(ctx, cfg.Retry)
+	consumer := kafka.NewConsumer(handler, reader, logger)
+	go consumer.Start(ctx)
 
-	srv := httpapi.New(service, logger)
+	srv := httpapi.New(service, logger, metrics)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.HTTPAddr); err != nil {
 			logger.Error("http stopped", zap.Error(err))
