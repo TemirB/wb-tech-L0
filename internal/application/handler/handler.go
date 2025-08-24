@@ -8,7 +8,6 @@ import (
 
 	"github.com/TemirB/wb-tech-L0/internal/config"
 	"github.com/TemirB/wb-tech-L0/internal/domain"
-	"github.com/TemirB/wb-tech-L0/internal/pkg/breaker"
 	"github.com/TemirB/wb-tech-L0/internal/pkg/retry"
 	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
@@ -24,17 +23,23 @@ type Service interface {
 	Upsert(ctx context.Context, order *domain.Order) error
 }
 
+type brk interface {
+	Allow() error
+	Failure()
+	Success()
+}
+
 type Handler struct {
 	service     Service
-	breaker     *breaker.Breaker
+	brk         brk
 	logger      *zap.Logger
 	retryPolicy config.Retry
 }
 
-func NewHandler(service Service, brk *breaker.Breaker, retryPolicy config.Retry, logger *zap.Logger) *Handler {
+func NewHandler(service Service, brk brk, retryPolicy config.Retry, logger *zap.Logger) *Handler {
 	return &Handler{
 		service:     service,
-		breaker:     brk,
+		brk:         brk,
 		logger:      logger,
 		retryPolicy: retryPolicy,
 	}
@@ -43,7 +48,7 @@ func NewHandler(service Service, brk *breaker.Breaker, retryPolicy config.Retry,
 // Handle — called by the consumer to process a single message.
 // The consumer commits the offset itself after successfully returning nil.
 func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
-	if err := h.breaker.Allow(); err != nil {
+	if err := h.brk.Allow(); err != nil {
 		h.logger.Warn("circuit breaker is open",
 			zap.Error(err),
 			zap.Int("partition", message.Partition),
@@ -59,7 +64,7 @@ func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
 			zap.Int("partition", message.Partition),
 			zap.Int64("offset", message.Offset),
 		)
-		h.breaker.Failure()
+		h.brk.Failure()
 		return ErrBadJSON
 	}
 	if order.OrderUID == "" {
@@ -67,7 +72,7 @@ func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
 			zap.Int("partition", message.Partition),
 			zap.Int64("offset", message.Offset),
 		)
-		h.breaker.Failure()
+		h.brk.Failure()
 		return ErrBadJSON
 	}
 
@@ -80,11 +85,11 @@ func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
 			zap.Int("partition", message.Partition),
 			zap.Int64("offset", message.Offset),
 		)
-		h.breaker.Failure()
+		h.brk.Failure()
 		return ErrUpsert
 	}
 
-	h.breaker.Success()
+	h.brk.Success()
 	h.logger.Info("successfully processed order",
 		zap.String("order_uid", order.OrderUID),
 		zap.Int("partition", message.Partition),
