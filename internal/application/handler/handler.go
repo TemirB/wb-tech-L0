@@ -40,8 +40,8 @@ func NewHandler(service Service, brk *breaker.Breaker, retryPolicy config.Retry,
 	}
 }
 
-// Handle — вызывается консьюмером для обработки одного сообщения.
-// Коммит офсета делает сам консьюмер после успешного возврата nil.
+// Handle — called by the consumer to process a single message.
+// The consumer commits the offset itself after successfully returning nil.
 func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
 	if err := h.breaker.Allow(); err != nil {
 		h.logger.Warn("circuit breaker is open",
@@ -71,7 +71,6 @@ func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
 		return ErrBadJSON
 	}
 
-	// Ретраи апсерта по вашей политике
 	if err := retry.Do(ctx, h.retryPolicy, func() error {
 		return h.service.Upsert(ctx, &order)
 	}); err != nil {
