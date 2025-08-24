@@ -140,12 +140,12 @@ func Load() Config {
 		CacheCap: capacity,
 
 		Pg: Postgres{
-			Host:     must("PG_HOST"),
-			Port:     get("PG_PORT", "5432"),
-			DB:       must("PG_DB"),
-			User:     must("PG_USER"),
-			Password: must("PG_PASSWORD"),
-			SSLMode:  get("PG_SSLMODE", "disable"),
+			Host:     strings.TrimSpace(must("PG_HOST")),
+			Port:     strings.TrimSpace(get("PG_PORT", "5432")),
+			DB:       strings.TrimSpace(must("PG_DB")),
+			User:     strings.TrimSpace(must("PG_USER")),
+			Password: strings.TrimSpace(must("PG_PASSWORD")),
+			SSLMode:  strings.TrimSpace(get("PG_SSLMODE", "disable")),
 		},
 
 		Tables: Tables{
@@ -158,8 +158,9 @@ func Load() Config {
 
 		Kafka: Kafka{
 			Brokers: splitCSV(must("KAFKA_BROKERS")),
-			Topic:   must("KAFKA_TOPIC"),
-			Group:   must("KAFKA_GROUP"),
+			// Trim any leading/trailing whitespace from topic and group to avoid subtle mismatches.
+			Topic:   strings.TrimSpace(must("KAFKA_TOPIC")),
+			Group:   strings.TrimSpace(must("KAFKA_GROUP")),
 			Workers: workers,
 		},
 
@@ -176,6 +177,7 @@ func Load() Config {
 			JitterFactor: jitterFactor,
 		},
 	}
+
 	return cfg
 }
 

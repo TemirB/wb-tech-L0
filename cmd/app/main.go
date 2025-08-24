@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -48,19 +47,19 @@ func main() {
 	}
 
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:           cfg.Kafka.Brokers,
-		Topic:             cfg.Kafka.Topic,
-		GroupID:           cfg.Kafka.Group,
-		StartOffset:       kafkago.FirstOffset,
-		MinBytes:          10e3,
-		MaxBytes:          10e6,
-		RebalanceTimeout:  60 * time.Second,
-		SessionTimeout:    45 * time.Second,
-		HeartbeatInterval: 3 * time.Second,
-		MaxWait:           10 * time.Second,
-		ReadBackoffMin:    100 * time.Millisecond,
-		ReadBackoffMax:    1 * time.Second,
-		CommitInterval:    time.Second,
+		Brokers: cfg.Kafka.Brokers,
+		Topic:   cfg.Kafka.Topic,
+		GroupID: cfg.Kafka.Group,
+		// StartOffset: kafkago.FirstOffset,
+		MinBytes: 10e3,
+		MaxBytes: 10e6,
+		// RebalanceTimeout:  60 * time.Second,
+		// SessionTimeout:    45 * time.Second,
+		// HeartbeatInterval: 3 * time.Second,
+		// MaxWait:           10 * time.Second,
+		// ReadBackoffMin:    100 * time.Millisecond,
+		// ReadBackoffMax:    1 * time.Second,
+		// CommitInterval:    time.Second,
 	})
 	breaker := breaker.New(cfg.Breaker)
 	service := service.NewService(cache, repo, logger)
