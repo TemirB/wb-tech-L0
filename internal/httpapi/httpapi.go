@@ -9,28 +9,32 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TemirB/wb-tech-L0/internal/application/service"
 	"github.com/TemirB/wb-tech-L0/internal/domain"
+	"github.com/TemirB/wb-tech-L0/internal/observability"
 	"go.uber.org/zap"
 )
 
 //go:generate mockgen -destination=../mocks/mock_service.go -package=mocks github.com/TemirB/wb-tech-L0/internal/httpapi Service
 
 type Service interface {
-	GetByUID(ctx context.Context, uid string) (*domain.Order, error)
-	Upsert(ctx context.Context, order *domain.Order) error
+	GetByUIDWithStats(ctx context.Context, uid string) (*domain.Order, service.LookupStats, error)
+	UpsertWithStats(ctx context.Context, order *domain.Order) (service.UpsertStats, error)
 }
 
 type Server struct {
 	service Service
 	mux     *http.ServeMux
 	logger  *zap.Logger
+	metrics observability.Metrics
 }
 
-func New(service Service, logger *zap.Logger) *Server {
+func New(service Service, logger *zap.Logger, metrics observability.Metrics) *Server {
 	s := &Server{
 		service: service,
 		logger:  logger,
 		mux:     http.NewServeMux(),
+		metrics: metrics,
 	}
 	s.routes()
 	return s
@@ -54,17 +58,26 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if order, err := s.service.GetByUID(r.Context(), uid); err == nil {
-		writeJSON(w, order)
+	order, st, err := s.service.GetByUIDWithStats(r.Context(), uid)
+	if err != nil {
+		// Можно дополнительно различать 404 и 500 по типу ошибки, если хранилище отдаёт ErrNotFound.
+		http.Error(w, "no order with this id", http.StatusNotFound)
 		return
 	}
 
-	http.Error(w, "no order with this id", http.StatusNotFound)
-	writeJSON(w, nil)
+	observability.AppendServerTiming(w, "cache", st.CacheMs, "")
+	observability.AppendServerTiming(w, "db", st.DBMs, "")
+	observability.AppendServerTiming(w, "source", 0, string(st.Source))
+	w.Header().Set("X-Source", string(st.Source))
+	observability.SetIfPos(w, "X-Cache-Time", st.CacheMs)
+	observability.SetIfPos(w, "X-DB-Time", st.DBMs)
+
+	writeJSON(w, order)
 }
 
 func (s *Server) upsertOrder(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Content-Type") != "application/json" {
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(strings.ToLower(ct), "application/json") {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -78,6 +91,8 @@ func (s *Server) upsertOrder(w http.ResponseWriter, r *http.Request) {
 			"Error while decoding JSON",
 			zap.Error(err),
 		)
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
 	}
 
 	if err := validateOrder(order); err != nil {
@@ -85,10 +100,13 @@ func (s *Server) upsertOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.service.Upsert(r.Context(), &order); err != nil {
+	st, err := s.service.UpsertWithStats(r.Context(), &order)
+	if err != nil {
 		http.Error(w, "Service error", http.StatusInternalServerError)
-		writeJSON(w, nil)
+		return
 	}
+
+	observability.AppendServerTiming(w, "db_write", st.DBWriteMs, "")
 
 	writeJSON(w, order)
 }
@@ -109,8 +127,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
-	srv := &http.Server{Addr: addr, Handler: s.mux}
-	go func() { <-ctx.Done(); _ = srv.Shutdown(context.Background()) }()
+	// Connect middleware
+	handler := ServerTimingApp(s.metrics)(s.mux)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	go func() {
+		<-ctx.Done()
+		_ = srv.Shutdown(context.Background())
+	}()
 	return srv.ListenAndServe()
 }
 
