@@ -12,6 +12,9 @@ import (
 // ServerTimingApp — middleware that measures the total request processing time and
 // writes app;dur=... to Server-Timing + sends an event to Metrics.ObserveHTTP.
 func ServerTimingApp(m observability.Metrics) func(http.Handler) http.Handler {
+	if m == nil {
+		m = observability.Noop{}
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()

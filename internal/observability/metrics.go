@@ -9,11 +9,11 @@ type Metrics interface {
 	IncCacheMiss()
 }
 
-// type Noop struct{}
+type Noop struct{}
 
-// func (Noop) ObserveLookup(string, float64, float64)   {}
-// func (Noop) ObserveUpsert(float64)                    {}
-// func (Noop) ObserveHTTP(string, string, int, float64) {}
-// func (Noop) ObserveKafka(float64, bool)               {}
-// func (Noop) IncCacheHit()                             {}
-// func (Noop) IncCacheMiss()                            {}
+func (Noop) ObserveLookup(string, float64, float64)   {}
+func (Noop) ObserveUpsert(float64)                    {}
+func (Noop) ObserveHTTP(string, string, int, float64) {}
+func (Noop) ObserveKafka(float64, bool)               {}
+func (Noop) IncCacheHit()                             {}
+func (Noop) IncCacheMiss()                            {}
