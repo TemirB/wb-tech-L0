@@ -4,86 +4,94 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/TemirB/wb-tech-L0/internal/config"
 	"github.com/TemirB/wb-tech-L0/internal/domain"
 	"github.com/TemirB/wb-tech-L0/internal/pkg/breaker"
 	"github.com/TemirB/wb-tech-L0/internal/pkg/retry"
-	"github.com/segmentio/kafka-go"
+	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 )
 
-var ErrKafkaFetch = errors.New("kafka fetch error")
-var ErrBadJSON = errors.New("bad json")
-var ErrUpsert = errors.New("upsert failed")
-var ErrCommit = errors.New("errorToCommit")
+var (
+	ErrBadJSON     = errors.New("bad json")
+	ErrUpsert      = errors.New("upsert failed")
+	ErrCircuitOpen = errors.New("circuit breaker open")
+)
 
 type Service interface {
 	Upsert(ctx context.Context, order *domain.Order) error
 }
 
 type Handler struct {
-	service Service
-	reader  *kafka.Reader
-	breaker *breaker.Breaker
-	logger  *zap.Logger
+	service     Service
+	breaker     *breaker.Breaker
+	logger      *zap.Logger
+	retryPolicy config.Retry
 }
 
-func NewHandler(service Service, reader *kafka.Reader, breaker *breaker.Breaker, logger *zap.Logger) *Handler {
+func NewHandler(service Service, brk *breaker.Breaker, retryPolicy config.Retry, logger *zap.Logger) *Handler {
 	return &Handler{
-		service: service,
-		reader:  reader,
-		breaker: breaker,
-		logger:  logger,
+		service:     service,
+		breaker:     brk,
+		logger:      logger,
+		retryPolicy: retryPolicy,
 	}
 }
 
-func (h *Handler) HandleUpsert(ctx context.Context, message kafka.Message, retryPolicy config.Retry) error {
-	// if err := h.breaker.Allow(); err != nil {
-	// 	h.logger.Warn(
-	// 		"circuit breaker is open",
-	// 		zap.Error(err),
-	// 	)
-	// 	time.Sleep(100 * time.Millisecond)
-	// 	return fmt.Errorf("circuit breaker open: %w", err)
-	// }
+// Handle — вызывается консьюмером для обработки одного сообщения.
+// Коммит офсета делает сам консьюмер после успешного возврата nil.
+func (h *Handler) Handle(ctx context.Context, message kafkago.Message) error {
+	if err := h.breaker.Allow(); err != nil {
+		h.logger.Warn("circuit breaker is open",
+			zap.Error(err),
+			zap.Int("partition", message.Partition),
+			zap.Int64("offset", message.Offset),
+		)
+		return fmt.Errorf("%w: %v", ErrCircuitOpen, err)
+	}
 
 	var order domain.Order
 	if err := json.Unmarshal(message.Value, &order); err != nil {
 		h.logger.Error("bad json format",
 			zap.Error(err),
-			zap.ByteString("raw_message", message.Value),
+			zap.Int("partition", message.Partition),
+			zap.Int64("offset", message.Offset),
 		)
-
+		h.breaker.Failure()
+		return ErrBadJSON
+	}
+	if order.OrderUID == "" {
+		h.logger.Error("missing order_uid",
+			zap.Int("partition", message.Partition),
+			zap.Int64("offset", message.Offset),
+		)
+		h.breaker.Failure()
 		return ErrBadJSON
 	}
 
-	processingErr := retry.Do(ctx, retryPolicy,
-		func() error { return h.service.Upsert(ctx, &order) },
-	)
-
-	if processingErr != nil {
+	// Ретраи апсерта по вашей политике
+	if err := retry.Do(ctx, h.retryPolicy, func() error {
+		return h.service.Upsert(ctx, &order)
+	}); err != nil {
 		h.logger.Error("upsert failed after retries",
 			zap.String("order_uid", order.OrderUID),
-			zap.Error(processingErr),
+			zap.Error(err),
+			zap.Int("partition", message.Partition),
+			zap.Int64("offset", message.Offset),
 		)
-		// h.breaker.Failure()
-
+		h.breaker.Failure()
 		return ErrUpsert
 	}
 
-	// h.breaker.Success()
+	h.breaker.Success()
 	h.logger.Info("successfully processed order",
 		zap.String("order_uid", order.OrderUID),
+		zap.Int("partition", message.Partition),
+		zap.Int64("offset", message.Offset),
+		zap.Int("key_bytes", len(message.Key)),
+		zap.Int("value_bytes", len(message.Value)),
 	)
-
-	// if err := h.reader.CommitMessages(ctx, message); err != nil {
-	// 	h.logger.Error("commit failed",
-	// 		zap.String("order_uid", order.OrderUID),
-	// 		zap.Error(err),
-	// 	)
-	// 	return fmt.Errorf("commit failed: %w", err)
-	// }
-
 	return nil
 }

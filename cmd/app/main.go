@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,6 +33,7 @@ func main() {
 
 	pool := database.Connect(ctx, cfg.DSN())
 	repo := database.New(pool, cfg.Tables)
+
 	cache, err := cache.New(cfg.CacheCap)
 	if err != nil {
 		panic(err)
@@ -48,8 +48,12 @@ func main() {
 		}
 	}
 
+	if err := kafka.EnsureTopic(ctx, cfg.Kafka.Brokers, cfg.Kafka.Topic, 1, 1, logger); err != nil {
+		logger.Fatal("failed to ensure kafka topic", zap.Error(err))
+	}
+
 	if strings.TrimSpace(cfg.Kafka.Topic) == "" {
-		log.Fatal("KAFKA_TOPIC is empty")
+		logger.Fatal("KAFKA_TOPIC is empty")
 	}
 
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
@@ -59,16 +63,17 @@ func main() {
 		WatchPartitionChanges: true,
 
 		StartOffset: kafkago.FirstOffset,
-		MinBytes:    10e3,
+		MinBytes:    1,
 		MaxBytes:    10e6,
-		MaxWait:     250 * time.Millisecond,
+		MaxWait:     10 * time.Second,
 
-		Logger:      log.New(os.Stdout, "kafka ", log.LstdFlags),
-		ErrorLogger: log.New(os.Stderr, "kafka ERR ", log.LstdFlags),
+		// Logger:      log.New(os.Stdout, "kafka ", log.LstdFlags),
+		// ErrorLogger: log.New(os.Stderr, "kafka ERR ", log.LstdFlags),
 	})
+
 	breaker := breaker.New(cfg.Breaker)
 	service := service.NewService(cache, repo, logger)
-	handler := handler.NewHandler(service, reader, breaker, logger)
+	handler := handler.NewHandler(service, breaker, cfg.Retry, logger)
 
 	consumer := kafka.New(handler, reader, logger)
 	go consumer.Start(ctx, cfg.Retry)
@@ -76,7 +81,7 @@ func main() {
 	srv := httpapi.New(service, logger)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.HTTPAddr); err != nil {
-			log.Printf("http stopped: %v", err)
+			logger.Error("http stopped", zap.Error(err))
 		}
 	}()
 
