@@ -3,13 +3,12 @@ package cache
 import (
 	"context"
 
-	"github.com/TemirB/wb-tech-L0/internal/config"
 	"github.com/TemirB/wb-tech-L0/internal/domain"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
-//go:generate mockgen -source internal/cache/cache.go -destination=internal/mocks/cache_mock_test.go -package=mocks
+//go:generate mockgen -source internal/cache/cache.go -destination=internal/cache/cache_mock_test.go -package=cache
 
 type repo interface {
 	GetByUID(ctx context.Context, uid string) (*domain.Order, error)
@@ -17,7 +16,8 @@ type repo interface {
 }
 
 type Cache struct {
-	lru *lru.Cache[string, domain.Order]
+	size int
+	lru  *lru.Cache[string, domain.Order]
 }
 
 func New(size int) (*Cache, error) {
@@ -25,11 +25,14 @@ func New(size int) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cache{c}, nil
+	return &Cache{
+		size: size,
+		lru:  c,
+	}, nil
 }
 
-func (c *Cache) Warm(ctx context.Context, cfg config.Config, repo repo) {
-	if ids, err := repo.RecentOrderIDs(ctx, cfg.CacheCap); err == nil {
+func (c *Cache) Warm(ctx context.Context, repo repo) {
+	if ids, err := repo.RecentOrderIDs(ctx, c.size); err == nil {
 		for _, id := range ids {
 			if o, err := repo.GetByUID(ctx, id); err == nil {
 				c.Set(o)

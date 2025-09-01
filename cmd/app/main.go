@@ -39,7 +39,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	cache.Warm(ctx, cfg, repo)
+	cache.Warm(ctx, repo)
 
 	if err := kafka.EnsureTopic(ctx, cfg.Kafka.Brokers, cfg.Kafka.Topic, 1, 1, logger); err != nil {
 		logger.Fatal("failed to ensure kafka topic", zap.Error(err))
