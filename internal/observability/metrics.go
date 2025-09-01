@@ -11,6 +11,9 @@ type Metrics interface {
 
 type Noop struct{}
 
+func NewNoop() *Noop {
+	return &Noop{}
+}
 func (Noop) ObserveLookup(string, float64, float64)   {}
 func (Noop) ObserveUpsert(float64)                    {}
 func (Noop) ObserveHTTP(string, string, int, float64) {}

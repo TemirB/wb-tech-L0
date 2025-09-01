@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:generate mockgen -source internal/application/service/service.go -destination=internal/mocks/service_mock_test.go -package=mocks
+//go:generate mockgen -source internal/application/service/service.go -destination=internal/application/service/service_mock_test.go -package=service
 
 type Cache interface {
 	Set(*domain.Order)
@@ -48,7 +48,7 @@ func (s *Service) UpsertWithStats(ctx context.Context, order *domain.Order) (Ups
 		)
 		return st, err
 	}
-	st.DBWriteMs = float64(time.Since(t0).Microseconds()) / 1000.0
+	st.DBWriteMs = convertToMs(t0)
 
 	s.cache.Set(order)
 
