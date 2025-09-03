@@ -4,10 +4,61 @@ import "sync"
 
 type Inmem struct {
 	mu     sync.Mutex
-	last   []any
+	last   []*observe
 	max    int
 	totals struct {
 		cacheHits, cacheMiss int
+	}
+}
+
+type observe struct {
+	Kind string
+
+	// Lookup fields
+	lSorce          string
+	lCacheMs, lDbMs float64
+	// Upsert fileds
+	uDbWriteMs float64
+	// HTTP fields
+	hMethod, hRoute string
+	hStatus         int
+	hDur            float64
+	// Kafka fields
+	kDur float64
+	kOK  bool
+}
+
+func NewLookup(source string, cacheMs, dbMs float64) *observe {
+	return &observe{
+		Kind:     "lookup",
+		lSorce:   source,
+		lCacheMs: cacheMs,
+		lDbMs:    dbMs,
+	}
+}
+
+func NewUpsert(dbWriteMs float64) *observe {
+	return &observe{
+		Kind:       "upsert",
+		uDbWriteMs: dbWriteMs,
+	}
+}
+
+func NewHTTP(method, route string, status int, durMs float64) *observe {
+	return &observe{
+		Kind:    "http",
+		hMethod: method,
+		hRoute:  route,
+		hStatus: status,
+		hDur:    durMs,
+	}
+}
+
+func NewKafka(processMs float64, ok bool) *observe {
+	return &observe{
+		Kind: "kafka",
+		kDur: processMs,
+		kOK:  ok,
 	}
 }
 
@@ -17,7 +68,7 @@ func NewInmem(max int) *Inmem {
 	}
 }
 
-func (m *Inmem) push(v any) {
+func (m *Inmem) push(v *observe) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.last = append(m.last, v)
@@ -27,35 +78,19 @@ func (m *Inmem) push(v any) {
 }
 
 func (m *Inmem) ObserveLookup(source string, cacheMs, dbMs float64) {
-	m.push(struct {
-		Kind          string
-		Source        string
-		CacheMs, DbMs float64
-	}{"lookup", source, cacheMs, dbMs})
+	m.push(NewLookup(source, cacheMs, dbMs))
 }
 
 func (m *Inmem) ObserveUpsert(dbWriteMs float64) {
-	m.push(struct {
-		Kind      string
-		DbWriteMs float64
-	}{"upsert", dbWriteMs})
+	m.push(NewUpsert(dbWriteMs))
 }
 
 func (m *Inmem) ObserveHTTP(method, route string, status int, durMs float64) {
-	m.push(struct {
-		Kind          string
-		Method, Route string
-		Status        int
-		Dur           float64
-	}{"http", method, route, status, durMs})
+	m.push(NewHTTP(method, route, status, durMs))
 }
 
 func (m *Inmem) ObserveKafka(processMs float64, ok bool) {
-	m.push(struct {
-		Kind string
-		Dur  float64
-		OK   bool
-	}{"kafka", processMs, ok})
+	m.push(NewKafka(processMs, ok))
 }
 
 func (m *Inmem) IncCacheHit() {
