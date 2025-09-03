@@ -18,9 +18,15 @@ type MessageHandler interface {
 	Handle(ctx context.Context, msg kafkago.Message) error
 }
 
+type Reader interface {
+	Config() kafkago.ReaderConfig
+	FetchMessage(ctx context.Context) (kafkago.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
+}
+
 type Consumer struct {
 	handler MessageHandler
-	reader  *kafkago.Reader
+	reader  Reader
 	zlogger *zap.Logger
 
 	workerPoolSize int
@@ -32,7 +38,7 @@ type jobItem struct {
 	result chan error
 }
 
-func NewConsumer(handler MessageHandler, reader *kafkago.Reader, logger *zap.Logger) *Consumer {
+func NewConsumer(handler MessageHandler, reader Reader, logger *zap.Logger) *Consumer {
 	workerPoolSize := 4
 	if s := os.Getenv("KAFKA_WORKERS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
