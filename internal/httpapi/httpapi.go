@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:generate mockgen -source internal/httpapi/httpapi.go -destination=internal/mocks/httpapi_mock_test.go -package=mocks
+//go:generate mockgen -source internal/httpapi/httpapi.go -destination=internal/httpapi/httpapi_mock_test.go -package=httpapi
 
 type ServerWithStats interface {
 	GetByUIDWithStats(ctx context.Context, uid string) (*domain.Order, service.LookupStats, error)
