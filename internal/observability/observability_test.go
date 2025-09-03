@@ -343,12 +343,8 @@ func TestInmem_IncCacheCounters(t *testing.T) {
 			inmem := NewInmem(10)
 			tt.actions(inmem)
 
-			if inmem.totals.cacheHits != tt.expectedHits {
-				t.Errorf("Expected %d cache hits, got %d", tt.expectedHits, inmem.totals.cacheHits)
-			}
-			if inmem.totals.cacheMiss != tt.expectedMisses {
-				t.Errorf("Expected %d cache misses, got %d", tt.expectedMisses, inmem.totals.cacheMiss)
-			}
+			require.Equal(t, tt.expectedHits, inmem.totals.cacheHits)
+			require.Equal(t, tt.expectedMisses, inmem.totals.cacheMiss)
 		})
 	}
 }
@@ -357,7 +353,6 @@ func TestInmem_ConcurrentOperations(t *testing.T) {
 	inmem := &Inmem{max: 100}
 	var wg sync.WaitGroup
 
-	// Concurrent pushes
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -369,7 +364,6 @@ func TestInmem_ConcurrentOperations(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrent increments
 	for i := 0; i < 30; i++ {
 		wg.Add(1)
 		go func() {
@@ -396,13 +390,10 @@ func TestInmem_ConcurrentOperations(t *testing.T) {
 func TestInmem_NegativeValues(t *testing.T) {
 	inmem := &Inmem{max: 10}
 
-	// Methods should handle negative values without panicking
 	inmem.ObserveLookup("test", -1.0, -2.0)
 	inmem.ObserveUpsert(-5.0)
 	inmem.ObserveHTTP("GET", "/", 200, -10.0)
 	inmem.ObserveKafka(-3.0, false)
 
-	if len(inmem.last) != 4 {
-		t.Errorf("Expected 4 observations, got %d", len(inmem.last))
-	}
+	require.Equal(t, 4, len(inmem.last))
 }
